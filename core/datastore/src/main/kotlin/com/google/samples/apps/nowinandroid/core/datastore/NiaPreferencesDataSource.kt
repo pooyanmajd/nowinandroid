@@ -33,6 +33,7 @@ class NiaPreferencesDataSource @Inject constructor(
         .map {
             UserData(
                 bookmarkedNewsResources = it.bookmarkedNewsResourceIdsMap.keys,
+                bookmarkNotes = it.bookmarkNotesMap,
                 viewedNewsResources = it.viewedNewsResourceIdsMap.keys,
                 followedTopics = it.followedTopicIdsMap.keys,
                 themeBrand = when (it.themeBrand) {
@@ -128,11 +129,49 @@ class NiaPreferencesDataSource @Inject constructor(
                         bookmarkedNewsResourceIds.put(newsResourceId, true)
                     } else {
                         bookmarkedNewsResourceIds.remove(newsResourceId)
+                        bookmarkNotes.remove(newsResourceId)
                     }
                 }
             }
         } catch (ioException: IOException) {
             Log.e("NiaPreferences", "Failed to update user preferences", ioException)
+        }
+    }
+
+    suspend fun setNewsResourcesBookmarked(newsResourceIds: Set<String>, bookmarked: Boolean) {
+        userPreferences.updateData { preferences ->
+            preferences.copy {
+                newsResourceIds.forEach { id ->
+                    if (bookmarked) {
+                        bookmarkedNewsResourceIds.put(id, true)
+                    } else {
+                        bookmarkedNewsResourceIds.remove(id)
+                    }
+                }
+            }
+        }
+    }
+
+    suspend fun setBookmarkNote(newsResourceId: String, note: String) {
+        require(note.length <= 500) { "Bookmark notes must not exceed 500 characters" }
+        userPreferences.updateData { preferences ->
+            preferences.copy {
+                if (note.isBlank() || newsResourceId !in bookmarkedNewsResourceIds) {
+                    bookmarkNotes.remove(newsResourceId)
+                } else {
+                    bookmarkNotes.put(newsResourceId, note)
+                }
+            }
+        }
+    }
+
+    suspend fun deleteUnbookmarkedNotes() {
+        userPreferences.updateData { preferences ->
+            preferences.copy {
+                (bookmarkNotes.keys - bookmarkedNewsResourceIds.keys).forEach {
+                    bookmarkNotes.remove(it)
+                }
+            }
         }
     }
 

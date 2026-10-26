@@ -49,5 +49,8 @@ message UserPreferences {
 
     bool use_dynamic_color = 19;
 
-    // NEXT AVAILABLE ID: 21
+    // Private, local-only notes keyed by news resource ID. Never included in sync or analytics.
+    map<string, string> bookmark_notes = 21;
+
+    // NEXT AVAILABLE ID: 22
 }

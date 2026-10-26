@@ -29,56 +29,154 @@ import com.google.samples.apps.nowinandroid.core.ui.NewsFeedUiState.Loading
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.io.IOException
 import javax.inject.Inject
+
+internal const val MAX_NOTE_LENGTH = 500
+
+data class BookmarkRemoval(val token: Long, val ids: Set<String>)
 
 @HiltViewModel
 class BookmarksViewModel @Inject constructor(
     private val userDataRepository: UserDataRepository,
     userNewsResourceRepository: UserNewsResourceRepository,
 ) : ViewModel() {
+    private val mutationMutex = Mutex()
+    private var nextRemovalToken = 0L
 
-    var shouldDisplayUndoBookmark by mutableStateOf(false)
-    private var lastRemovedBookmarkId: String? = null
+    var pendingRemoval: BookmarkRemoval? by mutableStateOf(null)
+        private set
+    val shouldDisplayUndoBookmark: Boolean get() = pendingRemoval != null
+
+    var selectedIds: Set<String> by mutableStateOf(emptySet())
+        private set
+    var selectionMode by mutableStateOf(false)
+        private set
+    var isUpdating by mutableStateOf(false)
+        private set
+    var operationFailed by mutableStateOf(false)
+        private set
 
     val feedUiState: StateFlow<NewsFeedUiState> =
         userNewsResourceRepository.observeAllBookmarked()
             .map<List<UserNewsResource>, NewsFeedUiState>(NewsFeedUiState::Success)
             .onStart { emit(Loading) }
-            .stateIn(
-                scope = viewModelScope,
-                started = SharingStarted.WhileSubscribed(5_000),
-                initialValue = Loading,
-            )
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), Loading)
 
-    fun removeFromSavedResources(newsResourceId: String) {
+    val notes: StateFlow<Map<String, String>> = userDataRepository.userData
+        .map { it.bookmarkNotes }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
+
+    init {
+        // An old process cannot offer Undo. Finish any interrupted removal on entering Saved.
+        mutate { userDataRepository.deleteUnbookmarkedNotes() }
         viewModelScope.launch {
-            shouldDisplayUndoBookmark = true
-            lastRemovedBookmarkId = newsResourceId
-            userDataRepository.setNewsResourceBookmarked(newsResourceId, false)
+            userDataRepository.userData.collect { data ->
+                selectedIds = selectedIds.intersect(data.bookmarkedNewsResources)
+                if (data.bookmarkedNewsResources.isEmpty()) cancelSelection()
+            }
         }
+    }
+
+    fun toggleSelection(id: String) {
+        if (isUpdating) return
+        val visibleIds = (feedUiState.value as? NewsFeedUiState.Success)?.feed?.map { it.id }.orEmpty()
+        if (id !in visibleIds) return
+        selectionMode = true
+        selectedIds = if (id in selectedIds) selectedIds - id else selectedIds + id
+    }
+
+    fun selectAll() {
+        if (isUpdating) return
+        selectedIds = (feedUiState.value as? NewsFeedUiState.Success)?.feed
+            ?.map { it.id }?.toSet().orEmpty()
+        selectionMode = selectedIds.isNotEmpty()
+    }
+
+    fun cancelSelection() {
+        selectedIds = emptySet()
+        selectionMode = false
+    }
+
+    fun removeSelected() = removeBookmarks(selectedIds)
+
+    fun removeFromSavedResources(newsResourceId: String) = removeBookmarks(setOf(newsResourceId))
+
+    private fun removeBookmarks(ids: Set<String>) {
+        if (ids.isEmpty()) return
+        mutate {
+            val existingIds = ids.intersect(userDataRepository.userData.first().bookmarkedNewsResources)
+            if (existingIds.isNotEmpty()) {
+                // Replacing the snackbar closes the previous batch's undo window.
+                userDataRepository.deleteUnbookmarkedNotes()
+                pendingRemoval = null
+                userDataRepository.setNewsResourcesBookmarked(existingIds, false)
+                pendingRemoval = BookmarkRemoval(++nextRemovalToken, existingIds)
+                cancelSelection()
+            }
+        }
+    }
+
+    fun undoBookmarkRemoval(expectedToken: Long? = pendingRemoval?.token) {
+        mutate {
+            val removal = pendingRemoval
+            if (removal != null && removal.token == expectedToken) {
+                userDataRepository.setNewsResourcesBookmarked(removal.ids, true)
+                pendingRemoval = null
+            }
+        }
+    }
+
+    fun clearUndoState(expectedToken: Long? = pendingRemoval?.token) {
+        mutate {
+            if (pendingRemoval?.token == expectedToken) {
+                userDataRepository.deleteUnbookmarkedNotes()
+                pendingRemoval = null
+            }
+        }
+    }
+
+    suspend fun saveNote(id: String, note: String): Boolean = mutationMutex.withLock {
+        if (note.length > MAX_NOTE_LENGTH) return@withLock false
+        isUpdating = true
+        try {
+            userDataRepository.setBookmarkNote(id, note)
+            true
+        } catch (_: IOException) {
+            operationFailed = true
+            false
+        } finally {
+            isUpdating = false
+        }
+    }
+
+    fun dismissError() {
+        operationFailed = false
     }
 
     fun setNewsResourceViewed(newsResourceId: String, viewed: Boolean) {
-        viewModelScope.launch {
-            userDataRepository.setNewsResourceViewed(newsResourceId, viewed)
-        }
+        mutate { userDataRepository.setNewsResourceViewed(newsResourceId, viewed) }
     }
 
-    fun undoBookmarkRemoval() {
+    private fun mutate(action: suspend () -> Unit) {
         viewModelScope.launch {
-            lastRemovedBookmarkId?.let {
-                userDataRepository.setNewsResourceBookmarked(it, true)
+            mutationMutex.withLock {
+                isUpdating = true
+                try {
+                    action()
+                } catch (_: IOException) {
+                    operationFailed = true
+                } finally {
+                    isUpdating = false
+                }
             }
         }
-        clearUndoState()
-    }
-
-    fun clearUndoState() {
-        shouldDisplayUndoBookmark = false
-        lastRemovedBookmarkId = null
     }
 }

@@ -43,6 +43,15 @@ interface UserDataRepository {
      */
     suspend fun setNewsResourceBookmarked(newsResourceId: String, bookmarked: Boolean)
 
+    /** Atomically updates a batch, retaining notes until the caller closes its undo window. */
+    suspend fun setNewsResourcesBookmarked(newsResourceIds: Set<String>, bookmarked: Boolean)
+
+    /** Saves a local note (at most 500 characters). Blank text deletes the note. */
+    suspend fun setBookmarkNote(newsResourceId: String, note: String)
+
+    /** Deletes only notes whose articles are no longer bookmarked, preserving re-saved items. */
+    suspend fun deleteUnbookmarkedNotes()
+
     /**
      * Updates the viewed status for a news resource
      */

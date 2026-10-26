@@ -69,8 +69,48 @@ class TestUserDataRepository : UserDataRepository {
                 current.bookmarkedNewsResources - newsResourceId
             }
 
-            _userData.tryEmit(current.copy(bookmarkedNewsResources = bookmarkedNews))
+            _userData.tryEmit(
+                current.copy(
+                    bookmarkedNewsResources = bookmarkedNews,
+                    bookmarkNotes = if (bookmarked) current.bookmarkNotes else current.bookmarkNotes - newsResourceId,
+                ),
+            )
         }
+    }
+
+    override suspend fun setNewsResourcesBookmarked(newsResourceIds: Set<String>, bookmarked: Boolean) {
+        _userData.tryEmit(
+            currentUserData.copy(
+                bookmarkedNewsResources = if (bookmarked) {
+                    currentUserData.bookmarkedNewsResources + newsResourceIds
+                } else {
+                    currentUserData.bookmarkedNewsResources - newsResourceIds
+                },
+            ),
+        )
+    }
+
+    override suspend fun setBookmarkNote(newsResourceId: String, note: String) {
+        require(note.length <= 500)
+        _userData.tryEmit(
+            currentUserData.copy(
+                bookmarkNotes = if (note.isBlank() || newsResourceId !in currentUserData.bookmarkedNewsResources) {
+                    currentUserData.bookmarkNotes - newsResourceId
+                } else {
+                    currentUserData.bookmarkNotes + (newsResourceId to note)
+                },
+            ),
+        )
+    }
+
+    override suspend fun deleteUnbookmarkedNotes() {
+        _userData.tryEmit(
+            currentUserData.copy(
+                bookmarkNotes = currentUserData.bookmarkNotes.filterKeys {
+                    it in currentUserData.bookmarkedNewsResources
+                },
+            ),
+        )
     }
 
     override suspend fun setNewsResourceViewed(newsResourceId: String, viewed: Boolean) {

@@ -14,4 +14,8 @@
      See the License for the specific language governing permissions and
      limitations under the License.
 -->
-<manifest />
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application
+        android:fullBackupContent="@xml/core_datastore_backup_rules"
+        android:dataExtractionRules="@xml/core_datastore_data_extraction_rules" />
+</manifest>

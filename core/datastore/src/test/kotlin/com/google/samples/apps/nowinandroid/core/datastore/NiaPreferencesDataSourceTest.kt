@@ -23,6 +23,8 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Before
 import org.junit.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -85,5 +87,51 @@ class NiaPreferencesDataSourceTest {
     fun userShouldUseDynamicColorIsTrueWhenSet() = testScope.runTest {
         subject.setDynamicColorPreference(true)
         assertTrue(subject.userData.first().useDynamicColor)
+    }
+
+    @Test
+    fun notes_roundTripThroughProtoAndRemainUntilBulkRemovalIsFinalized() = testScope.runTest {
+        val store = InMemoryDataStore(UserPreferences.getDefaultInstance())
+        val source = NiaPreferencesDataSource(store)
+        source.setNewsResourcesBookmarked(setOf("one", "two"), true)
+        source.setBookmarkNote("one", "Private note\nwith another line")
+        source.setBookmarkNote("two", "Keep me")
+        source.setNewsResourcesBookmarked(setOf("one"), false)
+        val restored = NiaPreferencesDataSource(
+            InMemoryDataStore(UserPreferences.parseFrom(store.data.first().toByteArray())),
+        )
+        assertEquals("Private note\nwith another line", restored.userData.first().bookmarkNotes["one"])
+        restored.deleteUnbookmarkedNotes()
+        assertEquals(mapOf("two" to "Keep me"), restored.userData.first().bookmarkNotes)
+    }
+
+    @Test
+    fun notes_bulkUndoAndResavingProtectNotesFromCleanup() = testScope.runTest {
+        subject.setNewsResourcesBookmarked(setOf("one", "two"), true)
+        subject.setBookmarkNote("one", "One")
+        subject.setBookmarkNote("two", "Two")
+        subject.setNewsResourcesBookmarked(setOf("one", "two"), false)
+        subject.setNewsResourcesBookmarked(setOf("one", "two"), true)
+        subject.deleteUnbookmarkedNotes()
+        assertEquals(mapOf("one" to "One", "two" to "Two"), subject.userData.first().bookmarkNotes)
+    }
+
+    @Test
+    fun notes_validateLengthDeleteBlankAndRejectOrphans() = testScope.runTest {
+        subject.setNewsResourceBookmarked("one", true)
+        subject.setBookmarkNote("one", "a".repeat(500))
+        assertFailsWith<IllegalArgumentException> { subject.setBookmarkNote("one", "a".repeat(501)) }
+        assertEquals(500, subject.userData.first().bookmarkNotes["one"]?.length)
+        subject.setBookmarkNote("one", "   ")
+        subject.setBookmarkNote("missing", "Orphan")
+        assertTrue(subject.userData.first().bookmarkNotes.isEmpty())
+    }
+
+    @Test
+    fun removingFromAnotherScreen_deletesTheNoteImmediately() = testScope.runTest {
+        subject.setNewsResourceBookmarked("one", true)
+        subject.setBookmarkNote("one", "Private")
+        subject.setNewsResourceBookmarked("one", false)
+        assertTrue(subject.userData.first().bookmarkNotes.isEmpty())
     }
 }

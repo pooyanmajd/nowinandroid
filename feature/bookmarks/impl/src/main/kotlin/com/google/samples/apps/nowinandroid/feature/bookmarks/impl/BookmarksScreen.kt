@@ -16,6 +16,8 @@
 
 package com.google.samples.apps.nowinandroid.feature.bookmarks.impl
 
+import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.annotation.VisibleForTesting
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.Orientation
@@ -23,6 +25,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -38,18 +41,25 @@ import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridItemSpan
+import androidx.compose.foundation.lazy.staggeredgrid.items
 import androidx.compose.foundation.lazy.staggeredgrid.rememberLazyStaggeredGridState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -60,7 +70,9 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.google.samples.apps.nowinandroid.core.analytics.LocalAnalyticsHelper
 import com.google.samples.apps.nowinandroid.core.designsystem.component.NiaLoadingWheel
+import com.google.samples.apps.nowinandroid.core.designsystem.component.NiaTextButton
 import com.google.samples.apps.nowinandroid.core.designsystem.component.scrollbar.DraggableScrollbar
 import com.google.samples.apps.nowinandroid.core.designsystem.component.scrollbar.rememberDraggableScroller
 import com.google.samples.apps.nowinandroid.core.designsystem.component.scrollbar.scrollbarState
@@ -73,8 +85,9 @@ import com.google.samples.apps.nowinandroid.core.ui.NewsFeedUiState.Success
 import com.google.samples.apps.nowinandroid.core.ui.TrackScreenViewEvent
 import com.google.samples.apps.nowinandroid.core.ui.TrackScrollJank
 import com.google.samples.apps.nowinandroid.core.ui.UserNewsResourcePreviewParameterProvider
-import com.google.samples.apps.nowinandroid.core.ui.newsFeed
-import com.google.samples.apps.nowinandroid.feature.bookmarks.api.R
+import com.google.samples.apps.nowinandroid.core.ui.launchCustomChromeTab
+import com.google.samples.apps.nowinandroid.core.ui.logNewsResourceOpened
+import com.google.samples.apps.nowinandroid.feature.bookmarks.api.R as ApiR
 
 @Composable
 internal fun BookmarksScreen(
@@ -84,6 +97,8 @@ internal fun BookmarksScreen(
     viewModel: BookmarksViewModel = hiltViewModel(),
 ) {
     val feedState by viewModel.feedUiState.collectAsStateWithLifecycle()
+    val notes by viewModel.notes.collectAsStateWithLifecycle()
+    val removal = viewModel.pendingRemoval
     BookmarksScreen(
         feedState = feedState,
         onShowSnackbar = onShowSnackbar,
@@ -92,8 +107,21 @@ internal fun BookmarksScreen(
         onTopicClick = onTopicClick,
         modifier = modifier,
         shouldDisplayUndoBookmark = viewModel.shouldDisplayUndoBookmark,
-        undoBookmarkRemoval = viewModel::undoBookmarkRemoval,
-        clearUndoState = viewModel::clearUndoState,
+        undoBookmarkRemoval = { viewModel.undoBookmarkRemoval(removal?.token) },
+        clearUndoState = { viewModel.clearUndoState(removal?.token) },
+        removalToken = removal?.token,
+        removalCount = removal?.ids?.size ?: 0,
+        notes = notes,
+        selectedIds = viewModel.selectedIds,
+        selectionMode = viewModel.selectionMode,
+        toggleSelection = viewModel::toggleSelection,
+        cancelSelection = viewModel::cancelSelection,
+        selectAll = viewModel::selectAll,
+        removeSelected = viewModel::removeSelected,
+        saveNote = viewModel::saveNote,
+        isUpdating = viewModel.isUpdating,
+        operationFailed = viewModel.operationFailed,
+        dismissError = viewModel::dismissError,
     )
 }
 
@@ -112,11 +140,30 @@ internal fun BookmarksScreen(
     shouldDisplayUndoBookmark: Boolean = false,
     undoBookmarkRemoval: () -> Unit = {},
     clearUndoState: () -> Unit = {},
+    removalToken: Long? = null,
+    removalCount: Int = 1,
+    notes: Map<String, String> = emptyMap(),
+    selectedIds: Set<String> = emptySet(),
+    selectionMode: Boolean = false,
+    toggleSelection: (String) -> Unit = {},
+    cancelSelection: () -> Unit = {},
+    selectAll: () -> Unit = {},
+    removeSelected: () -> Unit = {},
+    saveNote: suspend (String, String) -> Boolean = { _, _ -> true },
+    isUpdating: Boolean = false,
+    operationFailed: Boolean = false,
+    dismissError: () -> Unit = {},
 ) {
-    val bookmarkRemovedMessage = stringResource(id = R.string.feature_bookmarks_api_removed)
-    val undoText = stringResource(id = R.string.feature_bookmarks_api_undo)
+    val bookmarkRemovedMessage = pluralStringResource(
+        R.plurals.feature_bookmarks_impl_removed,
+        removalCount,
+        removalCount,
+    )
+    var editingId by rememberSaveable { mutableStateOf<String?>(null) }
+    BackHandler(enabled = selectionMode, onBack = cancelSelection)
+    val undoText = stringResource(id = ApiR.string.feature_bookmarks_api_undo)
 
-    LaunchedEffect(shouldDisplayUndoBookmark) {
+    LaunchedEffect(shouldDisplayUndoBookmark, removalToken) {
         if (shouldDisplayUndoBookmark) {
             val snackBarResult = onShowSnackbar(bookmarkRemovedMessage, undoText)
             if (snackBarResult) {
@@ -131,18 +178,76 @@ internal fun BookmarksScreen(
         clearUndoState()
     }
 
-    when (feedState) {
-        Loading -> LoadingState(modifier)
-        is Success -> if (feedState.feed.isNotEmpty()) {
-            BookmarksGrid(
-                feedState,
-                removeFromBookmarks,
-                onNewsResourceViewed,
-                onTopicClick,
-                modifier,
+    Column(modifier.fillMaxSize()) {
+        if (selectionMode) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        pluralStringResource(
+                            R.plurals.feature_bookmarks_impl_selected,
+                            selectedIds.size,
+                            selectedIds.size,
+                        ),
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    NiaTextButton(onClick = removeSelected, enabled = selectedIds.isNotEmpty() && !isUpdating) {
+                        Text(stringResource(R.string.feature_bookmarks_impl_remove))
+                    }
+                    NiaTextButton(onClick = cancelSelection) {
+                        Text(stringResource(R.string.feature_bookmarks_impl_cancel))
+                    }
+                }
+                NiaTextButton(onClick = selectAll, enabled = !isUpdating) {
+                    Text(stringResource(R.string.feature_bookmarks_impl_select_all))
+                }
+            }
+        }
+        if (operationFailed) {
+            Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    stringResource(R.string.feature_bookmarks_impl_write_error),
+                    modifier = Modifier.weight(1f),
+                    color = MaterialTheme.colorScheme.error,
+                )
+                NiaTextButton(onClick = dismissError) {
+                    Text(stringResource(R.string.feature_bookmarks_impl_dismiss))
+                }
+            }
+        }
+        when (feedState) {
+            Loading -> LoadingState(Modifier.weight(1f))
+            is Success -> if (feedState.feed.isNotEmpty()) {
+                BookmarksGrid(
+                    feedState = feedState,
+                    removeFromBookmarks = removeFromBookmarks,
+                    onNewsResourceViewed = onNewsResourceViewed,
+                    onTopicClick = onTopicClick,
+                    modifier = Modifier.weight(1f),
+                    notes = notes,
+                    selectedIds = selectedIds,
+                    selectionMode = selectionMode,
+                    toggleSelection = toggleSelection,
+                    editNote = { editingId = it },
+                    isUpdating = isUpdating,
+                )
+            } else {
+                EmptyState(Modifier.weight(1f))
+            }
+        }
+    }
+    editingId?.let { id ->
+        val resource = (feedState as? Success)?.feed?.find { it.id == id }
+        if (resource != null) {
+            BookmarkNoteDialog(
+                resourceId = id,
+                title = resource.title,
+                initialNote = notes[id].orEmpty(),
+                onDismiss = { editingId = null },
+                onSave = { saveNote(id, it) },
             )
         } else {
-            EmptyState(modifier)
+            LaunchedEffect(id) { editingId = null }
         }
     }
 
@@ -156,7 +261,7 @@ private fun LoadingState(modifier: Modifier = Modifier) {
             .fillMaxWidth()
             .wrapContentSize()
             .testTag("bookmarks:loading"),
-        contentDesc = stringResource(id = R.string.feature_bookmarks_api_loading),
+        contentDesc = stringResource(id = ApiR.string.feature_bookmarks_api_loading),
     )
 }
 
@@ -167,6 +272,12 @@ private fun BookmarksGrid(
     onNewsResourceViewed: (String) -> Unit,
     onTopicClick: (String) -> Unit,
     modifier: Modifier = Modifier,
+    notes: Map<String, String> = emptyMap(),
+    selectedIds: Set<String> = emptySet(),
+    selectionMode: Boolean = false,
+    toggleSelection: (String) -> Unit = {},
+    editNote: (String) -> Unit = {},
+    isUpdating: Boolean = false,
 ) {
     val scrollableState = rememberLazyStaggeredGridState()
     TrackScrollJank(scrollableState = scrollableState, stateName = "bookmarks:grid")
@@ -184,12 +295,32 @@ private fun BookmarksGrid(
                 .fillMaxSize()
                 .testTag("bookmarks:feed"),
         ) {
-            newsFeed(
-                feedState = feedState,
-                onNewsResourcesCheckedChanged = { id, _ -> removeFromBookmarks(id) },
-                onNewsResourceViewed = onNewsResourceViewed,
-                onTopicClick = onTopicClick,
-            )
+            val resources = (feedState as? Success)?.feed.orEmpty()
+            items(resources, key = { it.id }, contentType = { "bookmark" }) { resource ->
+                val context = LocalContext.current
+                val analytics = LocalAnalyticsHelper.current
+                val backgroundColor = MaterialTheme.colorScheme.background.toArgb()
+                BookmarkCard(
+                    resource = resource,
+                    note = notes[resource.id].orEmpty(),
+                    selected = if (selectionMode) resource.id in selectedIds else null,
+                    enabled = !isUpdating,
+                    onClick = {
+                        if (selectionMode) {
+                            toggleSelection(resource.id)
+                        } else {
+                            analytics.logNewsResourceOpened(resource.id)
+                            launchCustomChromeTab(context, Uri.parse(resource.url), backgroundColor)
+                            onNewsResourceViewed(resource.id)
+                        }
+                    },
+                    onLongClick = { toggleSelection(resource.id) },
+                    onRemove = { removeFromBookmarks(resource.id) },
+                    onEditNote = { editNote(resource.id) },
+                    onTopicClick = onTopicClick,
+                    modifier = Modifier.padding(horizontal = 8.dp).animateItem(),
+                )
+            }
             item(span = StaggeredGridItemSpan.FullLine) {
                 Spacer(Modifier.windowInsetsBottomHeight(WindowInsets.safeDrawing))
             }
@@ -229,7 +360,7 @@ private fun EmptyState(modifier: Modifier = Modifier) {
         val iconTint = LocalTintTheme.current.iconTint
         Image(
             modifier = Modifier.fillMaxWidth(),
-            painter = painterResource(id = R.drawable.feature_bookmarks_api_mg_empty_bookmarks),
+            painter = painterResource(id = ApiR.drawable.feature_bookmarks_api_mg_empty_bookmarks),
             colorFilter = if (iconTint != Color.Unspecified) ColorFilter.tint(iconTint) else null,
             contentDescription = null,
         )
@@ -237,7 +368,7 @@ private fun EmptyState(modifier: Modifier = Modifier) {
         Spacer(modifier = Modifier.height(48.dp))
 
         Text(
-            text = stringResource(id = R.string.feature_bookmarks_api_empty_error),
+            text = stringResource(id = ApiR.string.feature_bookmarks_api_empty_error),
             modifier = Modifier.fillMaxWidth(),
             textAlign = TextAlign.Center,
             style = MaterialTheme.typography.titleMedium,
@@ -247,7 +378,7 @@ private fun EmptyState(modifier: Modifier = Modifier) {
         Spacer(modifier = Modifier.height(8.dp))
 
         Text(
-            text = stringResource(id = R.string.feature_bookmarks_api_empty_description),
+            text = stringResource(id = ApiR.string.feature_bookmarks_api_empty_description),
             modifier = Modifier.fillMaxWidth(),
             textAlign = TextAlign.Center,
             style = MaterialTheme.typography.bodyMedium,

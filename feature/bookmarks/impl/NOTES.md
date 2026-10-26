@@ -26,8 +26,10 @@ Selection and Undo are transient ViewModel state. As with the original screen, O
 - UI tests: `./gradlew :feature:bookmarks:impl:connectedDemoDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.google.samples.apps.nowinandroid.feature.bookmarks.impl.BookmarksScreenTest`
 - Coverage includes batch Undo, note deletion after dismissal, stale snackbar callbacks, re-saving before cleanup, restart recovery, note length/edit/delete, write failure, selection changes, long press, Back, and dialog save/cancel/delete.
 
-Results on the available environment: app assembly/install, Bookmarks lint, and all 65 unit tests passed. The 11 Compose UI tests compiled but could not execute successfully on the API 37 emulator: the existing Espresso setup fails with `NoSuchMethodException: android.hardware.input.InputManager.getInstance`, including the original tests. Re-run them on a compatible emulator before treating UI verification as complete. The installed Saved screen visibly shows Add note; a full manual interaction walkthrough was not completed because desktop input control returned `noWindowsAvailable`.
+Verified on 26 October 2026: app assembly/install, Bookmarks lint, all 65 unit tests, and all 11 Bookmarks Compose UI tests passed. UI tests ran on Pixel_7_API_34 (Android 14). The API 37 emulator remains incompatible with the existing Espresso version (`InputManager.getInstance`); use the API 34 device for this checkout. A full manual app walkthrough remains separate from these automated checks.
+
+Gradle is pinned to JetBrains JDK 21 through `gradle/gradle-daemon-jvm.properties`; the Foojay resolver provisions a matching JDK when needed. This also resolves the Java 25 / JaCoCo instrumentation warnings. With multiple emulators connected, prefix the UI-test command with `ANDROID_SERIAL=emulator-5556` (verify the current serial with `adb devices`). Select Pixel_7_API_34 in Android Studio for Run and instrumented tests.
 
 ## Next steps
 
-Translate the new strings; consider a separate Room/no-backup note store if content grows; add persistent expiry if cleanup must happen without revisiting Saved after process death. Existing Java 25 / JaCoCo 0.8.12 instrumentation warnings affect coverage collection; no dependency upgrade is included in this feature.
+Translate the new strings; consider a separate Room/no-backup note store if content grows; add persistent expiry if cleanup must happen without revisiting Saved after process death. Keep the verified JDK/emulator combination when rehearsing; revalidate before upgrading tooling.
